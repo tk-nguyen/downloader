@@ -1,0 +1,13 @@
+[package]
+name = "downloader"
+version = "0.1.0"
+edition = "2021"
+
+# See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
+
+[dependencies]
+log = "0.4.21"
+miette = { version = "7.2.0", features = ["fancy"] }
+simplelog = "0.12.2"
+ureq = "2.9.7"
+url = "2.5.0"
