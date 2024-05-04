@@ -1,19 +1,33 @@
 use std::{
-    env,
     fs::OpenOptions,
     io::{BufWriter, Write},
     thread,
     time::Instant,
 };
 
+use clap::Parser;
 use log::info;
 use miette::{bail, ensure, IntoDiagnostic, Result};
 use simplelog::{ColorChoice, Config, LevelFilter, TermLogger, TerminalMode};
 use ureq::Agent;
 use url::Url;
 
-const CONNECTIONS: usize = 10;
-const SPLIT_SIZE: usize = 20_000_000; // 20M
+#[derive(Debug, Parser)]
+#[command(version, about)]
+/// A multi-threaded downloader
+struct DownloaderOptions {
+    /// The file URL to download
+    #[arg(value_parser(Url::parse))]
+    url: Url,
+
+    /// Number of connections to make
+    #[arg(long, short, default_value_t = 10)]
+    connections: usize,
+
+    /// Minimum split size
+    #[arg(long, short, default_value_t = 20_000_000)] // 20M
+    split_size: usize,
+}
 
 fn main() -> Result<()> {
     TermLogger::init(
@@ -23,9 +37,12 @@ fn main() -> Result<()> {
         ColorChoice::Auto,
     )
     .into_diagnostic()?;
-    ensure!(env::args().len() == 2, "Invalid number of arguments.");
-    // We already make sure there's only 1 arg
-    let url = Url::parse(&env::args().nth(1).unwrap()).into_diagnostic()?;
+
+    let opt = DownloaderOptions::parse();
+    let url = opt.url;
+    let connections = opt.connections;
+    let split_size = opt.split_size;
+
     let agent = Agent::new();
 
     let res = agent.head(url.as_str()).send_bytes(&[]).into_diagnostic()?;
@@ -45,39 +62,39 @@ fn main() -> Result<()> {
     };
     let filename = res.get_url().split('/').last().unwrap();
 
-    let num_parts = filesize / SPLIT_SIZE;
+    let num_parts = filesize / split_size;
 
     // We write file by appending
     let file = OpenOptions::new()
-        .append(true)
-        .create_new(true)
+        .write(true)
+        .truncate(true)
         .open(filename)
         .into_diagnostic()?;
     let mut writer = BufWriter::new(file);
 
     for part in 0..=num_parts {
         let segment_size = match part < num_parts {
-            true => SPLIT_SIZE / CONNECTIONS,
-            false => (filesize - part * SPLIT_SIZE) / CONNECTIONS,
+            true => split_size / connections,
+            false => (filesize - part * split_size) / connections,
         };
 
         // This is to measure speed
         let start = Instant::now();
 
-        (0..CONNECTIONS)
+        (0..connections)
             .map(|i| {
                 let conn = agent.clone();
                 let url = url.clone();
                 thread::spawn(move || {
                     let mut body = Vec::with_capacity(segment_size);
-                    let byte_range = match (part < num_parts, i < CONNECTIONS - 1) {
+                    let byte_range = match (part < num_parts, i < connections - 1) {
                         (true, true) | (true, false) | (false, true) => format!(
                             "bytes={}-{}",
-                            i * segment_size + part * SPLIT_SIZE,
-                            (i + 1) * segment_size + part * SPLIT_SIZE - 1
+                            i * segment_size + part * split_size,
+                            (i + 1) * segment_size + part * split_size - 1
                         ),
                         (false, false) => {
-                            format!("bytes={}-", i * segment_size + part * SPLIT_SIZE)
+                            format!("bytes={}-", i * segment_size + part * split_size)
                         }
                     };
                     conn.get(url.as_str())
@@ -97,15 +114,12 @@ fn main() -> Result<()> {
             })
             .for_each(|t| {
                 writer
-                    .write_all(&t.join().expect("Cannot get file data!"))
-                    .into_diagnostic()
-                    .expect("Cannot write to buffer!");
-                writer
-                    .flush()
-                    .into_diagnostic()
-                    .expect("Cannot flush writer!");
+                    .write(&t.join().expect("Cannot join thread!"))
+                    .expect("Cannot write to file!");
             })
     }
+    // Flush a final time to make sure all data are written to disk
+    writer.flush().into_diagnostic()?;
     info!("Finished downloading file {filename}");
 
     Ok(())
