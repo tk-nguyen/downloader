@@ -1,5 +1,5 @@
 use std::{
-    fs::OpenOptions,
+    fs::File,
     io::{BufWriter, Write},
     thread,
     time::Instant,
@@ -64,12 +64,7 @@ fn main() -> Result<()> {
 
     let num_parts = filesize / split_size;
 
-    // We write file by appending
-    let file = OpenOptions::new()
-        .write(true)
-        .truncate(true)
-        .open(filename)
-        .into_diagnostic()?;
+    let file = File::create(filename).into_diagnostic()?;
     let mut writer = BufWriter::new(file);
 
     for part in 0..=num_parts {
