@@ -1,12 +1,12 @@
 use std::{
     fs::File,
     io::{BufWriter, Write},
+    str::FromStr,
     thread,
-    time::Instant,
 };
 
 use clap::Parser;
-use log::info;
+use indicatif::{ProgressBar, ProgressFinish, ProgressStyle};
 use miette::{bail, ensure, IntoDiagnostic, Result};
 use simplelog::{ColorChoice, Config, LevelFilter, TermLogger, TerminalMode};
 use ureq::Agent;
@@ -61,6 +61,14 @@ fn main() -> Result<()> {
         false => bail!("No file size found! Cannot download!"),
     };
     let filename = res.get_url().split('/').last().unwrap();
+    let msg = String::from_str(filename).into_diagnostic()?;
+    let bar = ProgressBar::new(filesize as u64)
+        .with_style(
+            ProgressStyle::with_template("{msg}\n{wide_bar} {decimal_bytes}/{decimal_total_bytes}")
+                .into_diagnostic()?,
+        )
+        .with_message(msg)
+        .with_finish(ProgressFinish::Abandon);
 
     let num_parts = filesize / split_size;
 
@@ -72,9 +80,6 @@ fn main() -> Result<()> {
             true => split_size / connections,
             false => (filesize - part * split_size) / connections,
         };
-
-        // This is to measure speed
-        let start = Instant::now();
 
         (0..connections)
             .map(|i| {
@@ -99,23 +104,18 @@ fn main() -> Result<()> {
                         .into_reader()
                         .read_to_end(&mut body)
                         .unwrap();
-                    let duration = start.elapsed().as_secs_f64();
-                    info!(
-                        "Segment {i} downloaded in {duration}s, speed {0:.2} MB/s",
-                        segment_size as f64 / (duration * 1_000_000.0)
-                    );
                     body
                 })
             })
             .for_each(|t| {
-                writer
+                let written = writer
                     .write(&t.join().expect("Cannot join thread!"))
                     .expect("Cannot write to file!");
-            })
+                bar.inc(written as u64)
+            });
     }
     // Flush a final time to make sure all data are written to disk
     writer.flush().into_diagnostic()?;
-    info!("Finished downloading file {filename}");
 
     Ok(())
 }
